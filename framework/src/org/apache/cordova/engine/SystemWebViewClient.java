@@ -29,6 +29,7 @@ import android.os.Build;
 import android.webkit.ClientCertRequest;
 import android.webkit.HttpAuthHandler;
 import android.webkit.SslErrorHandler;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -42,13 +43,21 @@ import org.apache.cordova.PluginManager;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.BufferedInputStream;
+import java.io.UnsupportedEncodingException;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
 import java.util.Hashtable;
-
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * This class is the WebViewClient that implements callbacks for our web view.
  * The kind of callbacks that happen here are regarding the rendering of the
- * document instead of the chrome surrounding it, such as onPageStarted(), 
+ * document instead of the chrome surrounding it, such as onPageStarted(),
  * shouldOverrideUrlLoading(), etc. Related to but different than
  * CordovaChromeClient.
  */
@@ -58,6 +67,7 @@ public class SystemWebViewClient extends WebViewClient {
     protected final SystemWebViewEngine parentEngine;
     private boolean doClearHistory = false;
     boolean isCurrentlyLoading;
+    boolean videoProxyOn = false;
 
     /** The authorization tokens. */
     private Hashtable<String, AuthenticationToken> authenticationTokens = new Hashtable<String, AuthenticationToken>();
@@ -104,7 +114,7 @@ public class SystemWebViewClient extends WebViewClient {
         // By default handle 401 like we'd normally do!
         super.onReceivedHttpAuthRequest(view, handler, host, realm);
     }
-    
+
     /**
      * On received client cert request.
      * The method forwards the request to any running plugins before using the default implementation.
@@ -318,8 +328,9 @@ public class SystemWebViewClient extends WebViewClient {
     }
 
     @Override
-    @SuppressWarnings("deprecation")
-    public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+    public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+        Uri uri = request.getUrl();
+        String url = uri.toString();
         try {
             // Check the against the whitelist and lock out access to the WebView directory
             // Changing this will cause problems for your application
@@ -330,14 +341,36 @@ public class SystemWebViewClient extends WebViewClient {
             }
 
             CordovaResourceApi resourceApi = parentEngine.resourceApi;
-            Uri origUri = Uri.parse(url);
             // Allow plugins to intercept WebView requests.
-            Uri remappedUri = resourceApi.remapUri(origUri);
+            Uri remappedUri = resourceApi.remapUri(uri);
 
-            if (!origUri.equals(remappedUri) || needsSpecialsInAssetUrlFix(origUri) || needsKitKatContentUrlFix(origUri)) {
+            if (!uri.equals(remappedUri) || needsSpecialsInAssetUrlFix(uri) || needsKitKatContentUrlFix(uri)) {
                 CordovaResourceApi.OpenForReadResult result = resourceApi.openForRead(remappedUri, true);
                 return new WebResourceResponse(result.mimeType, "UTF-8", result.inputStream);
             }
+
+            // =====================================================================================
+            // WORKAROUND: Interceptamos algunas peticiones del reproductor de YouTube para evitar
+            // el error 429 (Too Many Requests).
+            // -------------------------------------------------------------------------------------
+            String path = uri.getPath();
+            if (path.startsWith("/get_video_info")) {
+                return handleRequest(request, videoProxyOn = false, true);
+            } else if (videoProxyOn && path.startsWith("/videoplayback")) {
+                return handleRequest(request, true, false);
+
+                // Método alternativo comprobando la cabecera origin y solo considerando peticiones
+                // por GET:
+                // if ("GET".equals(request.getMethod())) {
+                //    Map<String, String> headers = request.getRequestHeaders();
+                //    String origin = (headers != null) ? headers.get("Origin") : null;
+                //    if (origin != null && origin.contains("youtube")) {
+                //        return load(request, true, false);
+                //    }
+                // }
+            }
+            // =====================================================================================
+
             // If we don't need to special-case the request, let the browser load it.
             return null;
         } catch (IOException e) {
@@ -347,6 +380,103 @@ public class SystemWebViewClient extends WebViewClient {
             // Results in a 404.
             return new WebResourceResponse("text/plain", "UTF-8", null);
         }
+    }
+
+    private WebResourceResponse handleRequest(WebResourceRequest req, boolean proxy, boolean trace) {
+        Uri uri = req.getUrl();
+        String urlStr = uri.toString();
+        // Quitamos de la URL las partes conflictivas que puedan indicar que la petición se realiza
+        // desde una vista web. -> NOTE: De momento lo omitimos porque no ha funcionado.
+        // urlStr = urlStr.replace("%20Webview", "").replace("%2Cfile%3A%2F%2F", "");
+
+        if (proxy) {
+            StringBuffer urlStrb = new StringBuffer(
+                "https://beta.lyricstraining.com/video/proxy");
+                // "http://test.lyricstraining.com/video/proxy");
+                // "http://192.168.1.11:3000/video/proxy");
+                // "http://192.168.1.11:81/video/proxy");
+                // "http://ec2-52-210-155-99.eu-west-1.compute.amazonaws.com:3000/video/proxy");
+            try {
+                urlStrb.append("?url=").append(URLEncoder.encode(urlStr, "UTF-8"));
+            } catch (UnsupportedEncodingException uee) {
+                LOG.e(TAG, "Unable to encode URL", uee);
+                return null;
+            }
+            urlStr = urlStrb.toString();
+        }
+
+        try {
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) (url).openConnection();
+            // Method
+            conn.setRequestMethod(req.getMethod());
+            // LOG.d(TAG, req.getMethod() + " " + urlStr);
+            // Request headers
+            Map<String, String> headers = req.getRequestHeaders();
+            for (Map.Entry<String,String> entry : headers.entrySet()) {
+                String key = entry.getKey(), value = entry.getValue();
+                // NOTE: De momento lo omitimos porque no ha funcionado.
+                // if ("user-agent".equalsIgnoreCase(key)) {
+                //    value = value.replace("; wv)", ")");
+                // }
+                // LOG.d(TAG, "Request Header > " + key + ": " + value);
+                conn.setRequestProperty(key, value);
+            }
+
+            // Connect
+            conn.connect();
+            int responseCode = conn.getResponseCode();
+            // LOG.d(TAG, "Response Code > " + responseCode);
+            // Firebase Log
+            if (trace) {
+                PluginManager pluginManager = this.parentEngine.pluginManager;
+                if (pluginManager != null) {
+                    pluginManager.exec("FirebaseAnalytics", "logEvent", "", String.format(
+                            Locale.ENGLISH, "[\"%s\", {\"code\":\"%d\",\"host\":\"%s\"}]",
+                            (proxy ? "video_infop" : "video_info") + responseCode,
+                            responseCode, url.getHost()));
+                }
+            }
+            // Se comprueba el código de respuesta
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                String[] typeParts = conn.getContentType().split(";");
+                String type = typeParts[0].trim(), charset = null;
+                for (int i = 1; i < typeParts.length; i++) {
+                    String[] ps = typeParts[i].split("=");
+                    if ("charset".equalsIgnoreCase(ps[0].trim())) {
+                        charset = ps[1].trim();
+                    }
+                }
+                // Response Headers
+                Map<String, String> responseHeaders = new HashMap<>();
+                Map<String, List<String>> headerFields = conn.getHeaderFields();
+                for (Map.Entry<String,List<String>> entry : headerFields.entrySet()) {
+                    String key = entry.getKey();
+                    if (key != null) {
+                        StringBuffer value = new StringBuffer();
+                        for (String str : entry.getValue()) {
+                            if (value.length() > 0) {
+                                value.append(",");
+                            }
+                            value.append(str);
+                        }
+                        responseHeaders.put(entry.getKey(), value.toString());
+                        // LOG.d(TAG, "Response Header > " + entry.getKey() + ": " + value.toString());
+                    }
+                }
+                return new WebResourceResponse(type, charset, responseCode,
+                        conn.getResponseMessage(), responseHeaders,
+                        new BufferedInputStream(conn.getInputStream()));
+
+            } else if (responseCode == 429 && !proxy) {
+                // En caso del error 429 (too many requests) canalizamos las peticiones por nuestro
+                // proxy.
+                return handleRequest(req, videoProxyOn = true, true);
+            }
+        } catch (IOException ioe) {
+            LOG.e(TAG, "I/O Error", ioe);
+        }
+        return null;
     }
 
     private static boolean needsKitKatContentUrlFix(Uri uri) {
