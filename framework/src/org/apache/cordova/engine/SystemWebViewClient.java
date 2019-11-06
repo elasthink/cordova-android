@@ -359,7 +359,7 @@ public class SystemWebViewClient extends WebViewClient {
             } else if (videoProxyOn && path.startsWith("/videoplayback")) {
                 return handleRequest(request, true, false);
 
-                // Método alternativo comprobando la cabecera origin y solo considerando peticiones
+                // MÃ©todo alternativo comprobando la cabecera origin y solo considerando peticiones
                 // por GET:
                 // if ("GET".equals(request.getMethod())) {
                 //    Map<String, String> headers = request.getRequestHeaders();
@@ -385,17 +385,17 @@ public class SystemWebViewClient extends WebViewClient {
     private WebResourceResponse handleRequest(WebResourceRequest req, boolean proxy, boolean trace) {
         Uri uri = req.getUrl();
         String urlStr = uri.toString();
-        // Quitamos de la URL las partes conflictivas que puedan indicar que la petición se realiza
+        // Quitamos de la URL las partes conflictivas que puedan indicar que la peticiÃ³n se realiza
         // desde una vista web. -> NOTE: De momento lo omitimos porque no ha funcionado.
         // urlStr = urlStr.replace("%20Webview", "").replace("%2Cfile%3A%2F%2F", "");
 
         if (proxy) {
             StringBuffer urlStrb = new StringBuffer(
-                "https://beta.lyricstraining.com/video/proxy");
-                // "http://test.lyricstraining.com/video/proxy");
-                // "http://192.168.1.11:3000/video/proxy");
-                // "http://192.168.1.11:81/video/proxy");
-                // "http://ec2-52-210-155-99.eu-west-1.compute.amazonaws.com:3000/video/proxy");
+                    "https://beta.lyricstraining.com/video/proxy");
+            // "http://test.lyricstraining.com/video/proxy");
+            // "http://192.168.1.11:3000/video/proxy");
+            // "http://192.168.1.11:81/video/proxy");
+            // "http://ec2-52-210-155-99.eu-west-1.compute.amazonaws.com:3000/video/proxy");
             try {
                 urlStrb.append("?url=").append(URLEncoder.encode(urlStr, "UTF-8"));
             } catch (UnsupportedEncodingException uee) {
@@ -437,7 +437,7 @@ public class SystemWebViewClient extends WebViewClient {
                             responseCode, url.getHost()));
                 }
             }
-            // Se comprueba el código de respuesta
+            // Se comprueba el cÃ³digo de respuesta
             if (responseCode == HttpURLConnection.HTTP_OK) {
                 String[] typeParts = conn.getContentType().split(";");
                 String type = typeParts[0].trim(), charset = null;
